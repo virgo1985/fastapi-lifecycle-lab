@@ -62,10 +62,12 @@ jobs:
           esac
           publish=false
           if [[ "$GITHUB_EVENT_NAME" == "push" && "$target" != "none" ]]; then publish=true; fi
-          # Gitflow: main solo avanza con merges de release/* o hotfix/*. Un commit directo
-          # (p. ej. el inicial) no se publica en prod.
-          if [[ "$target" == "prod" && $(git rev-list --parents -n1 HEAD | wc -w) -lt 3 ]]; then
-            echo "::warning::El commit de main no es un merge: no se publica en prod"
+          # Gitflow: main solo publica con el merge de una release/* o hotfix/*. Cualquier otro
+          # commit (el inicial, un reset de la demo...) no se publica en prod.
+          subject=$(git log -1 --format=%s)
+          if [[ "$target" == "prod" ]] && ! [[ $(git rev-list --parents -n1 HEAD | wc -w) -ge 3 \
+               && "$subject" =~ ^Merge\ pull\ request\ \#[0-9]+\ from\ [^/]+/(release|hotfix)/ ]]; then
+            echo "::warning::El commit de main no es el merge de una release/hotfix: no se publica en prod"
             publish=false
           fi
           {
