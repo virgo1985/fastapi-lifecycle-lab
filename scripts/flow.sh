@@ -11,6 +11,8 @@
 #
 # Sin X.Y.Z, release sube la minor del último tag (o la major si develop trae un
 # breaking change) y hotfix sube la patch. El back-merge main -> develop lo abre el pipeline.
+# Si se lanza con "sh script" (bash en modo POSIX en macOS), relanzar con bash.
+if [ -z "${BASH_VERSION:-}" ] || (set -o | grep -q '^posix[[:space:]]*on'); then exec bash "$0" "$@"; fi
 set -euo pipefail
 
 die() { echo "error: $*" >&2; exit 1; }
