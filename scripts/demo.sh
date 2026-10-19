@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 # Utilidades para repetir la demo. Requiere git, gh (autenticado como admin del repo), jq y curl.
 #
-#   scripts/demo.sh feature        cambio de ejemplo repetible: añade el saludo de la vuelta N
-#                                  a /hello, rama feature/demo-round-N y PR a develop
+#   scripts/demo.sh feature        rama feature/<cambio> desde develop y escribe el código y los
+#                                  tests del siguiente cambio del catálogo SIN commitear
+#                                  (para enseñarlo en el IDE). Catálogo: scripts/demo_changes.py
+#   scripts/demo.sh hotfix         igual, desde main en hotfix/X.Y.Z+1, con un arreglo del catálogo
+#   scripts/demo.sh pr ["título"]  checks locales (ruff, mypy, pytest), commit, push y PR a develop
+#                                  (en hotfix: solo push -> staging; luego flow.sh hotfix finish)
+#   scripts/demo.sh abort          descarta el cambio sin subir y borra la rama local
 #   scripts/demo.sh status         qué versión sirve cada entorno
 #   scripts/demo.sh baseline       marca origin/develop como estado "limpio" (tag demo-baseline)
 #   scripts/demo.sh reset [opciones]
@@ -25,27 +30,87 @@ cd "$(git rev-parse --show-toplevel)"
 
 clean_tree() { [[ -z "$(git status --porcelain)" ]] || die "hay cambios sin commitear"; }
 
+prepare_change() { # <feature|hotfix> <rama base> <prefijo de rama, con versión si aplica>
+  local kind=$1 base=$2 prefix=$3 plan slug title branch
+  plan=$(python3 scripts/demo_changes.py plan "$kind" "origin/$base") || exit 1
+  slug=${plan%%$'\t'*}
+  title=${plan#*$'\t'}
+  if [[ "$kind" == feature ]]; then branch="feature/$slug"; else branch="$prefix"; fi
+  git ls-remote -q --exit-code --heads origin "$branch" > /dev/null \
+    && die "$branch ya existe en GitHub (¿PR sin fusionar de una vuelta anterior?)"
+  git branch -q -D "$branch" 2> /dev/null || true
+  git switch -q -c "$branch" "origin/$base"
+  python3 scripts/demo_changes.py apply "$slug"
+  git add -N .                                   # los ficheros nuevos también salen en el diff
+  git config "branch.$branch.demotitle" "$title" # lo usa "demo.sh pr"
+
+  step "$branch — $title"
+  git -c color.ui=always diff --stat
+  echo
+  echo "  Enséñalo en el IDE (pestaña Source Control) o con: git diff"
+  echo "  Siguiente paso: scripts/demo.sh pr"
+  if [[ -z "${DEMO_NO_IDE:-}" ]] && command -v "${DEMO_IDE:-code}" > /dev/null; then
+    # shellcheck disable=SC2046
+    "${DEMO_IDE:-code}" . $(git diff --name-only)
+  fi
+}
+
 cmd_feature() {
   clean_tree
   git fetch -q --prune origin
-  local n branch title
-  n=$(( $(git show origin/develop:app/greetings.py | grep -c '^    "') + 1 ))
-  branch="feature/demo-round-$n"
-  title="feat(hello): saludo de la vuelta $n de la demo"
-  git ls-remote -q --exit-code --heads origin "$branch" > /dev/null && die "$branch ya existe en GitHub (¿PR sin fusionar?)"
-  git branch -D "$branch" 2> /dev/null || true
-  git switch -q -c "$branch" origin/develop
-  python3 - "$n" <<'EOF'
-import datetime, pathlib, sys
-p = pathlib.Path("app/greetings.py")
-s = p.read_text()
-line = f'    "Vuelta {sys.argv[1]} de la demo ({datetime.date.today().isoformat()})",\n'
-p.write_text(s.replace("]\n", line + "]\n", 1))
-EOF
-  git commit -q -am "$title"
+  prepare_change feature develop ""
+}
+
+cmd_hotfix() {
+  clean_tree
+  local v
+  v=$(scripts/flow.sh next | awk '/^hotfix:/ {print $2}')
+  [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "no hay ninguna versión en prod que parchear (haz antes una release)"
+  prepare_change hotfix main "hotfix/$v"
+}
+
+cmd_pr() {
+  local branch title
+  branch=$(git rev-parse --abbrev-ref HEAD)
+  [[ "$branch" == feature/* || "$branch" == hotfix/* ]] || die "no estás en una feature/* ni hotfix/*"
+  [[ -n "$(git status --porcelain)" ]] || die "no hay cambios que commitear"
+  title=${1:-$(git config --get "branch.$branch.demotitle" || true)}
+  [[ -n "$title" ]] || die 'falta el título (Conventional Commit): scripts/demo.sh pr "feat(x): ..."'
+
+  if command -v uv > /dev/null; then
+    step "Shift-left: las mismas comprobaciones que hará CI, ahora en local"
+    if ! (uv run ruff check . && uv run ruff format --check . && uv run mypy && uv run pytest -q); then
+      die "las comprobaciones locales fallan: corrígelo antes de subirlo"
+    fi
+  else
+    echo "(uv no está instalado: se salta la comprobación local; CI lo hará igualmente)"
+  fi
+
+  step "Commit y push"
+  git add -A
+  git commit -q -m "$title"
   git push -q -u origin "$branch"
-  gh pr create -R "$REPO" --base develop --head "$branch" --title "$title" \
-    --body "Cambio de ejemplo de la demo: \`/hello\` devuelve el saludo de la vuelta $n. Fusionar con **Squash and merge**."
+  git log -1 --format='  %h %s'
+
+  if [[ "$branch" == feature/* ]]; then
+    step "PR a develop"
+    gh pr create -R "$REPO" --base develop --head "$branch" --title "$title" \
+      --body "Cambio de la demo (\`scripts/demo_changes.py\`). Fusionar con **Squash and merge**: el título del PR será el commit en \`develop\`."
+  else
+    step "Hotfix subido: CI publica ${branch#hotfix/}-rc.N y lo despliega en staging"
+    echo "  Cuando lo valides en staging: scripts/flow.sh hotfix finish"
+  fi
+}
+
+cmd_abort() {
+  local branch
+  branch=$(git rev-parse --abbrev-ref HEAD)
+  [[ "$branch" == feature/* || "$branch" == hotfix/* ]] || die "no estás en una feature/* ni hotfix/*"
+  git reset -q --hard
+  git clean -q -fd -- app tests
+  git switch -q develop
+  git branch -q -D "$branch"
+  echo "✔ $branch descartada (si ya la habías subido, borra también la remota: git push origin --delete $branch)"
 }
 
 cmd_status() {
@@ -178,8 +243,11 @@ EOF
 
 case "${1:-}" in
   feature) cmd_feature ;;
+  hotfix) cmd_hotfix ;;
+  pr) shift; cmd_pr "$@" ;;
+  abort) cmd_abort ;;
   status) cmd_status ;;
   baseline) cmd_baseline ;;
   reset) shift; cmd_reset "$@" ;;
-  *) sed -n '2,16p' "$0"; exit 1 ;;
+  *) sed -n '2,20p' "$0"; exit 1 ;;
 esac
