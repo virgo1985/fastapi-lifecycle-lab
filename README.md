@@ -14,24 +14,24 @@ La aplicación es deliberadamente tonta (FastAPI con `/items` en memoria). Lo im
 
 ```mermaid
 gitGraph
-  commit id: "v0.1.0" tag: "v0.1.0"
+  commit id: "scaffold"
   branch develop
   checkout develop
-  branch feature/items-filter
-  commit id: "feat: filtro"
+  branch feature/items-search
+  commit id: "feat: búsqueda"
   checkout develop
-  merge feature/items-filter id: "0.2.0-alpha.1 → dev"
-  branch release/0.2.0
-  commit id: "fix: rc → 0.2.0-rc.2 → staging"
+  merge feature/items-search id: "0.1.0-alpha.2 → dev"
+  branch release/0.1.0
+  commit id: "fix: 0.1.0-rc.N → staging"
   checkout main
-  merge release/0.2.0 id: "0.2.0 → prod" tag: "v0.2.0"
+  merge release/0.1.0 id: "0.1.0 → prod" tag: "v0.1.0"
   checkout develop
   merge main id: "back-merge"
   checkout main
-  branch hotfix/0.2.1
-  commit id: "fix: urgente → 0.2.1-rc.1"
+  branch hotfix/0.1.1
+  commit id: "fix: 0.1.1-rc.1 → staging"
   checkout main
-  merge hotfix/0.2.1 id: "0.2.1 → prod" tag: "v0.2.1"
+  merge hotfix/0.1.1 id: "0.1.1 → prod" tag: "v0.1.1"
   checkout develop
   merge main id: "back-merge "
 ```

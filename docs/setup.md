@@ -64,7 +64,7 @@ Al arrancar debe aparecer en *Settings → Actions → Runners* como `docker01-�
 
 Los jobs `Deploy dev` que hayan quedado en cola se ejecutan solos cuando el runner aparece. Si caducaron (24 h), haz *Re-run failed jobs* en el último run de `develop`.
 
-`main` no tiene nada en prod hasta la primera release: el commit inicial no es un merge y el pipeline no lo publica (regla de gitflow). Prod se estrena con la primera `release/0.2.0` del [guion de demo](demo.md).
+`main` no tiene nada en prod hasta la primera release: el commit inicial no es un merge y el pipeline no lo publica (regla de gitflow). Prod se estrena con la primera `release/0.1.0` del [guion de demo](demo.md).
 
 ## Comprobaciones
 

@@ -183,6 +183,7 @@ jobs:
         if: steps.promote.outputs.promoted != 'true'
         run: |
           short="${GITHUB_SHA::7}"
+          [[ "$PUBLISH" == "true" ]] || TARGET=none   # sin publicar: imagen local para escanear
           case "$TARGET" in
             dev)     tags="$IMAGE:$SEMVER,$IMAGE:develop,$IMAGE:sha-$short" ;;
             staging) tags="$IMAGE:$SEMVER,$IMAGE:tree-$TREE,$IMAGE:sha-$short" ;;
