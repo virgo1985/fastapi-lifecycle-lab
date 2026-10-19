@@ -100,6 +100,7 @@ def version() -> dict[str, object]:
         "version": APP_VERSION,
         "environment": APP_ENV,
         "started_at": STARTED_AT.isoformat(),
+        "tested_at": "2024-06-01T12:00:00Z",
         "build": __build_info__(),
     }
 
