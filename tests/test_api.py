@@ -52,3 +52,11 @@ def test_metrics_exposed() -> None:
     r = client.get("/metrics")
     assert r.status_code == 200
     assert "http_requests_total" in r.text
+
+
+def test_hello_returns_latest_greeting() -> None:
+    from app.greetings import GREETINGS
+
+    body = client.get("/hello").json()
+    assert body["message"] == GREETINGS[-1]
+    assert body["round"] == len(GREETINGS)

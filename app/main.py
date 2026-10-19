@@ -16,6 +16,7 @@ from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel, Field
 
 from app import __build_info__
+from app.greetings import GREETINGS
 
 
 def _env(name: str, default: str) -> str:
@@ -103,6 +104,12 @@ def version() -> dict[str, object]:
         "tested_at": "2024-06-01T12:00:00Z",
         "build": __build_info__(),
     }
+
+
+@app.get("/hello", tags=["info"])
+def hello() -> dict[str, object]:
+    """Último saludo publicado y cuántas vueltas de demo lleva el producto."""
+    return {"message": GREETINGS[-1], "round": len(GREETINGS), "version": APP_VERSION}
 
 
 @app.get("/items", tags=["items"])
