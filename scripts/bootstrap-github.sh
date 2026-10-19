@@ -3,6 +3,8 @@
 # Requiere: gh autenticado como el propietario del repo (gh auth login).
 #
 #   scripts/bootstrap-github.sh [owner/repo]
+# Si se lanza con "sh script" (bash en modo POSIX en macOS), relanzar con bash.
+if [ -z "${BASH_VERSION:-}" ] || (set -o | grep -q '^posix[[:space:]]*on'); then exec bash "$0" "$@"; fi
 set -euo pipefail
 
 REPO="${1:-virgo1985/fastapi-lifecycle-lab}"

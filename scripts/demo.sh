@@ -13,6 +13,8 @@
 #       --purge-history   borra runs de Actions y el historial de despliegues
 #       --teardown        para los contenedores lab-* en docker01 (ssh ${LAB_SSH:-pfj@docker01})
 #       --yes             no pide confirmación
+# Si se lanza con "sh script" (bash en modo POSIX en macOS), relanzar con bash.
+if [ -z "${BASH_VERSION:-}" ] || (set -o | grep -q '^posix[[:space:]]*on'); then exec bash "$0" "$@"; fi
 set -euo pipefail
 
 REPO="${REPO:-virgo1985/fastapi-lifecycle-lab}"
@@ -110,8 +112,9 @@ EOF
   fi
 
   step "Desactivando rulesets (se reactivan al salir, pase lo que pase)"
-  while read -r id; do [[ -n "$id" ]] && RULESETS+=("$id"); done \
-    < <(gh api "repos/$REPO/rulesets" -q '.[] | select(.enforcement=="active") | .id')
+  local active_ids
+  active_ids=$(gh api "repos/$REPO/rulesets" -q '.[] | select(.enforcement=="active") | .id')
+  for id in $active_ids; do RULESETS+=("$id"); done
   trap restore_rulesets EXIT
   for id in ${RULESETS[@]+"${RULESETS[@]}"}; do gh api -X PUT "repos/$REPO/rulesets/$id" -f enforcement=disabled --silent; done
 
