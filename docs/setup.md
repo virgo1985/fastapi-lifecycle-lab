@@ -55,8 +55,11 @@ GitHub → Settings → Developer settings → **Fine-grained tokens** → Gener
 | Repository URL | `https://github.com/virgo1985/fastapi-lifecycle-lab` |
 | Reference | `refs/heads/main` |
 | Compose path | `platform/runner/compose.yaml` |
-| Relative path volumes | ✔ activado (monta `hooks/`) |
+| Enable relative path volumes | ✔ activado (monta `hooks/`) |
+| Local filesystem path | **ruta absoluta** de docker01, la misma que traefik: `/mnt/fastpool-docker` |
 | Environment variables | `GH_RUNNER_PAT` = el token del paso 3 |
+
+> Portainer clona el repo en `<Local filesystem path>/portainer-compose-unpacker/stacks/<stack>/…` y monta `hooks/` desde ahí. Con una ruta relativa (p. ej. `hooks`) falla con *"mount path must be absolute"*.
 
 Al arrancar debe aparecer en *Settings → Actions → Runners* como `docker01-…` con la etiqueta `homelab-deploy`. Es efímero: tras cada job el contenedor se reinicia y se vuelve a registrar.
 
