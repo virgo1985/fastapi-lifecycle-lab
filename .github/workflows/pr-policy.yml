@@ -1,0 +1,62 @@
+# Reglas de gitflow que GitHub no sabe expresar por sí solo.
+name: PR policy
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  gitflow:
+    name: Gitflow guard
+    runs-on: ubuntu-24.04
+    steps:
+      - name: ¿Está permitido este origen → destino?
+        env:
+          HEAD: ${{ github.head_ref }}
+          BASE: ${{ github.base_ref }}
+        run: |
+          ok=false
+          case "$BASE" in
+            main)
+              [[ "$HEAD" =~ ^(release|hotfix)/[0-9]+\.[0-9]+\.[0-9]+$ ]] && ok=true ;;
+            develop)
+              [[ "$HEAD" =~ ^(feature|bugfix)/[a-z0-9._-]+$ ]] && ok=true
+              [[ "$HEAD" =~ ^(release|hotfix)/[0-9]+\.[0-9]+\.[0-9]+$ ]] && ok=true
+              [[ "$HEAD" == "main" ]] && ok=true                   # back-merge tras publicar
+              [[ "$HEAD" =~ ^dependabot/ ]] && ok=true ;;
+            release/*|hotfix/*)
+              [[ "$HEAD" =~ ^bugfix/[a-z0-9._-]+$ ]] && ok=true ;;  # arreglos durante la estabilización
+          esac
+          if [[ "$ok" != true ]]; then
+            echo "::error::Gitflow no permite '$HEAD' → '$BASE'."
+            echo "Permitido: feature/* y bugfix/* → develop · release/X.Y.Z y hotfix/X.Y.Z → main (y develop) · main → develop (back-merge) · bugfix/* → release/*|hotfix/*"
+            exit 1
+          fi
+          echo "✅ '$HEAD' → '$BASE' cumple gitflow" >> "$GITHUB_STEP_SUMMARY"
+
+  title:
+    name: Conventional PR title
+    runs-on: ubuntu-24.04
+    steps:
+      # Las features se fusionan en develop con squash: el título del PR ES el commit,
+      # y de él salen el incremento de versión y el changelog.
+      - uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v6.1.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          types: |
+            feat
+            fix
+            perf
+            refactor
+            docs
+            test
+            build
+            ci
+            chore
+            revert
+            style
+          requireScope: false

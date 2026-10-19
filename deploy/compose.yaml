@@ -1,0 +1,38 @@
+# Un mismo compose para los tres entornos; cambia el fichero env/<entorno>.env.
+# IMAGE_REF (imagen@digest verificado) y APP_VERSION los pasa el job de despliegue.
+name: lab-${LAB_ENV:?LAB_ENV requerido}
+
+services:
+  api:
+    image: ${IMAGE_REF:?IMAGE_REF requerido}
+    container_name: lab-${LAB_ENV}-api
+    restart: unless-stopped
+    environment:
+      APP_ENV: ${LAB_ENV}
+      APP_VERSION: ${APP_VERSION:?APP_VERSION requerido}
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 128m
+    cpus: 0.5
+    networks:
+      - traefik-proxy
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=traefik-proxy
+      - traefik.http.routers.lab-${LAB_ENV}.rule=Host(`${LAB_HOST}`)
+      - traefik.http.routers.lab-${LAB_ENV}.entrypoints=websecure
+      - traefik.http.routers.lab-${LAB_ENV}.tls.certresolver=letsencrypt
+      - traefik.http.services.lab-${LAB_ENV}.loadbalancer.server.port=8000
+      - homepage.group=Lifecycle Lab
+      - homepage.name=lab ${LAB_ENV}
+      - homepage.icon=fastapi.png
+      - homepage.href=https://${LAB_HOST}/docs
+      - homepage.description=${APP_VERSION}
+
+networks:
+  traefik-proxy:
+    external: true

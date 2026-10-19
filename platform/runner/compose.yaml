@@ -1,0 +1,47 @@
+# Runner self-hosted de GitHub Actions para el Lifecycle Lab, en docker01.
+#
+# Despliegue: Portainer -> Stacks -> Add stack -> Repository
+#   URL:           https://github.com/virgo1985/fastapi-lifecycle-lab
+#   Reference:     refs/heads/main
+#   Compose path:  platform/runner/compose.yaml
+#   ✔ "Enable relative path volumes" (compose-unpacker), como en arr-stack y traefik
+#   Variable de entorno del stack: GH_RUNNER_PAT  (ver README: PAT fine-grained)
+#
+# Seguridad (léelo antes de desplegar):
+#   - Monta /var/run/docker.sock => quien controle un job controla Docker en docker01
+#     (equivale a root). Por eso: solo jobs con la etiqueta homelab-deploy, hook que
+#     rechaza todo lo que no sea push/workflow_dispatch del propio repo sobre ramas
+#     gitflow, y runner EPHEMERAL (un contenedor limpio por job).
+#   - Mejora recomendada: moverlo a una VM aparte (docker02) para aislar el homelab.
+name: lifecycle-lab-runner
+
+services:
+  runner:
+    image: myoung34/github-runner:2.338.0-ubuntu-noble@sha256:2112bde2ee92b7480babfbe3043d0461e322b97ca01e6ac94698895f3dc1f528
+    container_name: gh-runner-lifecycle-lab
+    restart: unless-stopped
+    environment:
+      REPO_URL: https://github.com/virgo1985/fastapi-lifecycle-lab
+      RUNNER_SCOPE: repo
+      ACCESS_TOKEN: ${GH_RUNNER_PAT:?Define GH_RUNNER_PAT en las variables del stack}
+      RUNNER_NAME_PREFIX: docker01
+      RANDOM_RUNNER_SUFFIX: "true"
+      LABELS: homelab-deploy
+      EPHEMERAL: "true"
+      DISABLE_AUTO_UPDATE: "true"
+      RUNNER_WORKDIR: /tmp/runner/work
+      ACTIONS_RUNNER_HOOK_JOB_STARTED: /opt/hooks/job-started.sh
+      EXPECTED_REPO: virgo1985/fastapi-lifecycle-lab
+      ALLOWED_ACTORS: virgo1985
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./hooks:/opt/hooks:ro
+    mem_limit: 1g
+    cpus: 1
+    security_opt:
+      - no-new-privileges:true
+    labels:
+      - homepage.group=Lifecycle Lab
+      - homepage.name=GitHub runner
+      - homepage.icon=github.png
+      - homepage.href=https://github.com/virgo1985/fastapi-lifecycle-lab/settings/actions/runners

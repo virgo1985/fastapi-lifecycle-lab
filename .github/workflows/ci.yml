@@ -1,0 +1,381 @@
+# Pipeline principal. Una sola definición para todas las ramas de gitflow:
+#
+#   PR (cualquiera)        -> versión + lint + tests + build + SBOM + escaneo   (no publica)
+#   push develop           -> ... + publica X.Y.Z-alpha.N, firma, despliega en dev
+#   push release/*,hotfix/*-> ... + publica X.Y.Z-rc.N,   firma, despliega en staging
+#   push main              -> PROMOCIONA la imagen rc ya probada (mismo digest) a X.Y.Z,
+#                             crea tag + GitHub Release, espera aprobación y despliega en prod,
+#                             abre el PR de back-merge main -> develop
+#
+# Todas las actions están fijadas por SHA (supply chain). Dependabot las actualiza.
+name: CI/CD
+
+on:
+  push:
+    branches: [develop, main, "release/**", "hotfix/**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  # ---------------------------------------------------------------- versión
+  version:
+    name: Version
+    runs-on: ubuntu-24.04
+    outputs:
+      semver: ${{ steps.gitversion.outputs.semVer }}
+      major: ${{ steps.gitversion.outputs.major }}
+      minor: ${{ steps.gitversion.outputs.minor }}
+      prerelease: ${{ steps.gitversion.outputs.preReleaseLabel }}
+      tree: ${{ steps.ctx.outputs.tree }}
+      target_env: ${{ steps.ctx.outputs.target_env }}
+      publish: ${{ steps.ctx.outputs.publish }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # GitVersion necesita todo el historial y los tags
+
+      - uses: GitTools/actions/gitversion/setup@7417b1089e2c7de93510f1901d656ddf60bb024f # v4.7.0
+        with:
+          versionSpec: "6.8.x"
+
+      - id: gitversion
+        uses: GitTools/actions/gitversion/execute@7417b1089e2c7de93510f1901d656ddf60bb024f # v4.7.0
+
+      - id: ctx
+        name: Entorno de destino
+        run: |
+          case "$GITHUB_REF" in
+            refs/heads/develop)                         target=dev ;;
+            refs/heads/release/*|refs/heads/hotfix/*)   target=staging ;;
+            refs/heads/main)                            target=prod ;;
+            *)                                          target=none ;;
+          esac
+          publish=false
+          if [[ "$GITHUB_EVENT_NAME" == "push" && "$target" != "none" ]]; then publish=true; fi
+          # Gitflow: main solo avanza con merges de release/* o hotfix/*. Un commit directo
+          # (p. ej. el inicial) no se publica en prod.
+          if [[ "$target" == "prod" && $(git rev-list --parents -n1 HEAD | wc -w) -lt 3 ]]; then
+            echo "::warning::El commit de main no es un merge: no se publica en prod"
+            publish=false
+          fi
+          {
+            echo "target_env=$target"
+            echo "publish=$publish"
+            echo "tree=$(git rev-parse 'HEAD^{tree}')"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### Versión"
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Rama | \`${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}\` |"
+            echo "| SemVer | \`${{ steps.gitversion.outputs.semVer }}\` |"
+            echo "| Entorno destino | \`$target\` |"
+            echo "| Publica imagen | \`$publish\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------- calidad
+  lint:
+    name: Lint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - name: Ruff (estilo + reglas de seguridad tipo bandit)
+        run: uv run ruff check --output-format=github .
+      - name: Formato
+        run: uv run ruff format --check .
+      - name: Tipos
+        run: uv run mypy
+      - name: Dockerfile
+        uses: hadolint/hadolint-action@06be81baf89a55ffd0e24b8f04a4185738dd3387 # v3.5.0
+        with:
+          dockerfile: Dockerfile
+
+  test:
+    name: Unit tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - name: Pytest (cobertura mínima 80 %)
+        run: uv run pytest
+      - name: Resumen de cobertura
+        if: always()
+        run: |
+          python3 - <<'EOF' >> "$GITHUB_STEP_SUMMARY"
+          import xml.etree.ElementTree as ET
+          r = ET.parse("coverage.xml").getroot()
+          print(f"### Cobertura: {float(r.get('line-rate')) * 100:.1f} %")
+          EOF
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: test-reports
+          path: |
+            junit.xml
+            coverage.xml
+
+  # ---------------------------------------------------------------- imagen
+  build:
+    name: Build image
+    needs: [version, lint, test]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write # publicar en GHCR
+      id-token: write # firma keyless de cosign (OIDC de GitHub -> Sigstore)
+      security-events: write # subir el SARIF del escaneo a Code scanning
+    outputs:
+      digest: ${{ steps.result.outputs.digest }}
+    env:
+      SEMVER: ${{ needs.version.outputs.semver }}
+      TREE: ${{ needs.version.outputs.tree }}
+      TARGET: ${{ needs.version.outputs.target_env }}
+      PUBLISH: ${{ needs.version.outputs.publish }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - if: env.PUBLISH == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # --- main: build once, promote. La imagen que se probó en staging (rc) se re-etiqueta.
+      - id: promote
+        name: Promocionar imagen de release (sin reconstruir)
+        if: env.TARGET == 'prod' && env.PUBLISH == 'true'
+        run: |
+          src="$IMAGE:tree-$TREE"
+          if docker buildx imagetools inspect "$src" > /dev/null 2>&1; then
+            major="${{ needs.version.outputs.major }}"; minor="${{ needs.version.outputs.minor }}"
+            docker buildx imagetools create \
+              -t "$IMAGE:$SEMVER" -t "$IMAGE:$major.$minor" -t "$IMAGE:$major" -t "$IMAGE:latest" \
+              "$src"
+            echo "promoted=true" >> "$GITHUB_OUTPUT"
+            echo "### ♻️ Promoción: \`$src\` → \`$SEMVER\` (sin rebuild)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::No existe $src; se construye desde cero (¿merge sin pasar por release/hotfix?)"
+            echo "promoted=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - id: tags
+        name: Etiquetas de la imagen
+        if: steps.promote.outputs.promoted != 'true'
+        run: |
+          short="${GITHUB_SHA::7}"
+          case "$TARGET" in
+            dev)     tags="$IMAGE:$SEMVER,$IMAGE:develop,$IMAGE:sha-$short" ;;
+            staging) tags="$IMAGE:$SEMVER,$IMAGE:tree-$TREE,$IMAGE:sha-$short" ;;
+            prod)    tags="$IMAGE:$SEMVER,$IMAGE:${{ needs.version.outputs.major }}.${{ needs.version.outputs.minor }},$IMAGE:${{ needs.version.outputs.major }},$IMAGE:latest" ;;
+            *)       tags="lifecycle-lab:ci" ;;
+          esac
+          echo "tags=$tags" >> "$GITHUB_OUTPUT"
+
+      - id: build
+        name: Build${{ needs.version.outputs.publish == 'true' && ' & push' || '' }}
+        if: steps.promote.outputs.promoted != 'true'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64
+          push: ${{ env.PUBLISH == 'true' }}
+          load: ${{ env.PUBLISH != 'true' }}
+          tags: ${{ steps.tags.outputs.tags }}
+          provenance: ${{ env.PUBLISH == 'true' && 'mode=max' || 'false' }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            BUILD_VERSION=${{ env.SEMVER }}
+            BUILD_GIT_SHA=${{ github.sha }}
+            BUILD_GIT_REF=${{ github.ref_name }}
+            BUILD_DATE=${{ github.event.head_commit.timestamp || github.event.pull_request.updated_at }}
+
+      - id: result
+        name: Referencia a escanear
+        run: |
+          if [[ "$PUBLISH" == "true" ]]; then
+            digest=$(docker buildx imagetools inspect "$IMAGE:$SEMVER" --format '{{json .Manifest}}' | jq -r .digest)
+            echo "digest=$digest" >> "$GITHUB_OUTPUT"
+            echo "ref=$IMAGE@$digest" >> "$GITHUB_OUTPUT"
+            echo "### 📦 \`$IMAGE:$SEMVER\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "Digest: \`$digest\`" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "ref=lifecycle-lab:ci" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: SBOM (SPDX)
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          image: ${{ steps.result.outputs.ref }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+          upload-artifact: false
+
+      - id: scan
+        name: Escaneo de vulnerabilidades (Grype) — bloquea con CRITICAL
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+        with:
+          sbom: sbom.spdx.json
+          fail-build: true
+          severity-cutoff: critical
+          only-fixed: true
+          output-format: sarif
+          output-file: grype.sarif
+
+      - name: Publicar hallazgos en Code scanning
+        if: always() && steps.scan.outcome != 'skipped' && github.event.pull_request.head.repo.fork != true
+        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        with:
+          sarif_file: grype.sarif
+          category: grype
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sbom
+          path: sbom.spdx.json
+
+      - if: env.PUBLISH == 'true'
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Firmar imagen y adjuntar SBOM como attestation (keyless)
+        if: env.PUBLISH == 'true'
+        env:
+          REF: ${{ steps.result.outputs.ref }}
+        run: |
+          cosign sign --yes "$REF"
+          cosign attest --yes --type spdxjson --predicate sbom.spdx.json "$REF"
+          echo "🔏 Firmado con identidad \`${GITHUB_WORKFLOW_REF}\`" >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------- despliegues
+  deploy-dev:
+    name: Deploy dev
+    needs: [version, build]
+    if: needs.version.outputs.target_env == 'dev' && needs.version.outputs.publish == 'true'
+    permissions:
+      contents: read
+      packages: read
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: dev
+      version: ${{ needs.version.outputs.semver }}
+
+  deploy-staging:
+    name: Deploy staging
+    needs: [version, build]
+    if: needs.version.outputs.target_env == 'staging' && needs.version.outputs.publish == 'true'
+    permissions:
+      contents: read
+      packages: read
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: staging
+      version: ${{ needs.version.outputs.semver }}
+
+  # ---------------------------------------------------------------- release (main)
+  release:
+    name: Tag & GitHub Release
+    needs: [version, build]
+    if: needs.version.outputs.target_env == 'prod' && needs.version.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      TAG: v${{ needs.version.outputs.semver }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - id: exists
+        run: |
+          if git rev-parse -q --verify "refs/tags/$TAG" > /dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::$TAG ya existe; no se vuelve a crear"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Notas de la versión (Conventional Commits)
+        if: steps.exists.outputs.exists == 'false'
+        uses: orhun/git-cliff-action@a9a95522b26fe6403f7bb24031f21fb573d0f5ff # v4.9.1
+        with:
+          config: cliff.toml
+          args: --unreleased --tag ${{ env.TAG }} --strip header
+        env:
+          OUTPUT: RELEASE_NOTES.md
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: steps.exists.outputs.exists == 'false'
+        with:
+          name: sbom
+
+      - name: Crear tag
+        if: steps.exists.outputs.exists == 'false'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+
+      - name: GitHub Release
+        if: steps.exists.outputs.exists == 'false'
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          tag_name: ${{ env.TAG }}
+          name: ${{ env.TAG }}
+          body_path: RELEASE_NOTES.md
+          files: sbom.spdx.json
+          make_latest: "true"
+
+  deploy-prod:
+    name: Deploy prod
+    needs: [version, release]
+    permissions:
+      contents: read
+      packages: read
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: prod
+      version: ${{ needs.version.outputs.semver }}
+
+  back-merge:
+    name: Back-merge main → develop
+    needs: [version, release]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Abrir PR de back-merge
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.version.outputs.semver }}
+        run: |
+          if [[ -n "$(gh pr list --base develop --head main --state open --json number -q '.[].number')" ]]; then
+            echo "Ya hay un PR de back-merge abierto"; exit 0
+          fi
+          gh pr create --base develop --head main \
+            --title "chore(release): back-merge v$VERSION into develop" \
+            --body "Gitflow: lleva a \`develop\` lo publicado en \`v$VERSION\` (merge de release/hotfix). Fusionar con **merge commit**, no squash." \
+          || echo "::notice::Sin cambios que llevar a develop"

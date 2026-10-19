@@ -1,0 +1,34 @@
+# GitVersion traduce gitflow a SemVer 2.0. Partimos del preset GitFlow/v1 y solo
+# cambiamos lo necesario para que cada commit publicable tenga una versión única.
+#
+#   rama            ejemplo de versión      entorno
+#   feature/*       0.3.0-login.1           (solo CI)
+#   develop         0.3.0-alpha.7           dev
+#   release/0.3.0   0.3.0-rc.2              staging
+#   hotfix/0.2.1    0.2.1-rc.1              staging
+#   main  (tag)     0.3.0                   prod
+workflow: GitFlow/v1
+tag-prefix: '[vV]?'
+
+# Conventional Commits mueven la versión de develop:
+#   feat!: ... / BREAKING CHANGE:  -> major
+#   feat: ...                      -> minor (develop ya incrementa minor por defecto)
+#   fix: ... / perf: ...           -> patch
+major-version-bump-message: '^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([\w\s\-,/\\]*\))?!:|BREAKING CHANGE:'
+minor-version-bump-message: '^feat(\([\w\s\-,/\\]*\))?:'
+patch-version-bump-message: '^(fix|perf)(\([\w\s\-,/\\]*\))?:'
+
+branches:
+  main:
+    # main solo recibe merges de release/* y hotfix/*: su versión es la de esa rama, sin sufijo.
+    mode: ContinuousDeployment
+  develop:
+    label: alpha
+  release:
+    # ContinuousDelivery: el número de pre-release sube en cada commit (rc.1, rc.2...),
+    # así cada push a release/* produce una imagen distinta y trazable.
+    mode: ContinuousDelivery
+    label: rc
+  hotfix:
+    mode: ContinuousDelivery
+    label: rc

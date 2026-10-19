@@ -1,0 +1,48 @@
+[project]
+name = "fastapi-lifecycle-lab"
+# La versión real NO vive aquí: la calcula GitVersion a partir de gitflow + tags
+# y se inyecta en la imagen. Este campo es solo un marcador.
+version = "0.0.0"
+description = "API tonta para demostrar el ciclo de vida completo con gitflow y semver"
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "fastapi>=0.120",
+    "uvicorn>=0.38",
+    "prometheus-fastapi-instrumentator>=7.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4",
+    "pytest-cov>=7.0",
+    "httpx>=0.28",
+    "ruff>=0.14",
+    "mypy>=1.18",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+# E/F/W estilo y errores, I imports, B bugbear, UP modernización, S = reglas de seguridad (bandit)
+select = ["E", "F", "W", "I", "B", "UP", "S", "C4", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]
+
+[tool.mypy]
+strict = true
+files = ["app", "tests"]
+
+[[tool.mypy.overrides]]
+module = ["prometheus_fastapi_instrumentator.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+addopts = "-q --cov=app --cov-report=term-missing --cov-report=xml --cov-fail-under=80 --junitxml=junit.xml"
+testpaths = ["tests"]
